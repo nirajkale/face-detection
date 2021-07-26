@@ -1,10 +1,9 @@
 from dataclasses import dataclass
 import math
+from typing import List
 
 @dataclass
-class FDDBExample:
-    fold:int
-    image_path:str
+class FDDBAnnotation:
     major_axis_radius:float
     minor_axis_radius:float
     angle:float
@@ -36,6 +35,13 @@ class FDDBExample:
         x1, y1 = int(self.center_x - (width / 2)), int(self.center_y - (height / 2))
         x2, y2 = int(self.center_x + (width / 2)), int(self.center_y + (height / 2))
         return (x1, y1), (x2, y2)
+
+@dataclass
+class FDDBExample:
+
+    fold:int
+    image_path:str
+    annotations:List[FDDBAnnotation]
         
         
     
