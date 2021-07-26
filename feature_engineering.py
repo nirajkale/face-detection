@@ -51,8 +51,8 @@ def read_folds(fold_start=1, fold_end=1):
                         )
                         img_path, n_faces, annotations = None, None, []
                         
-def create_tf_example(example:FDDBExample):
-    with tf.gfile.GFile(os.path.join('originalPics', example.image_path), 'rb') as fid:
+def create_tf_example(example:FDDBExample)-> tf.train.Example:
+    with tf.io.gfile.GFile(os.path.join('images', example.image_path), 'rb') as fid:
         encoded_jpg = fid.read()
     encoded_jpg_io = io.BytesIO(encoded_jpg)
     image = Image.open(encoded_jpg_io)
@@ -67,13 +67,14 @@ def create_tf_example(example:FDDBExample):
     classes_text = []
     classes = []
 
-    for index, row in group.object.iterrows():
-        xmins.append(row['xmin'] / width)
-        xmaxs.append(row['xmax'] / width)
-        ymins.append(row['ymin'] / height)
-        ymaxs.append(row['ymax'] / height)
-        classes_text.append(row['class'].encode('utf8'))
-        classes.append(class_text_to_int(row['class']))
+    for annotation in example.annotations:
+        (x1, y1), (x2, y2) = annotation.cv2_rectangle_box()
+        xmins.append(x1 / width)
+        xmaxs.append(x2 / width)
+        ymins.append(y1 / height)
+        ymaxs.append(y2 / height)
+        classes_text.append('face'.encode('utf-8'))
+        classes.append(class_text_to_int('face'))
 
     tf_example = tf.train.Example(features=tf.train.Features(feature={
         'image/height': dataset_util.int64_feature(height),
@@ -91,26 +92,37 @@ def create_tf_example(example:FDDBExample):
     }))
     return tf_example
                         
-def generate_tf_records(fold_start=1, fold_end=1):
-    pass
-                    
-                    
+def generate_tf_records(output_path, fold_start=1, fold_end=1):
+    print('Generating tf-record at:', output_path)
+    sample_count = 0
+    writer = tf.io.TFRecordWriter(output_path)
+    for example in read_folds(fold_start, fold_end):
+        tf_example = create_tf_example(example)
+        sample_count += 1
+        writer.write(tf_example.SerializeToString())
+    writer.close()
+    print('sample found:', sample_count)
+
 if __name__ == '__main__':
     
-    preview_index = 4500
-    i = 0
-    for item in read_folds(1,10):
-        i += 1
-        if i == preview_index:
-            break
-    impath = path.join('originalPics', item.image_path)
-    image = cv2.imread(impath)
-    #item.angle, 0, 360, 'red', 5
-    for annotation in item.annotations:
-        ellipse_box = annotation.cv2_ellipse_box()
-        cv2.ellipse(image, ellipse_box, (0, 204, 0), 3)
-        p1, p2 = annotation.cv2_rectangle_box()
-        cv2.rectangle(image, p1, p2, (0, 0, 204), 3)
-    cv2.imshow("preview", image)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
+    def test1():
+        preview_index = 4500
+        i = 0
+        for item in read_folds(1,10):
+            i += 1
+            if i == preview_index:
+                break
+        impath = path.join('images', item.image_path)
+        image = cv2.imread(impath)
+        #item.angle, 0, 360, 'red', 5
+        for annotation in item.annotations:
+            ellipse_box = annotation.cv2_ellipse_box()
+            cv2.ellipse(image, ellipse_box, (0, 204, 0), 3)
+            p1, p2 = annotation.cv2_rectangle_box()
+            cv2.rectangle(image, p1, p2, (0, 0, 204), 3)
+        cv2.imshow("preview", image)
+        cv2.waitKey(0)
+        cv2.destroyAllWindows()
+    
+    generate_tf_records(r'training/train.record', fold_start=1, fold_end=8)
+    generate_tf_records(r'training/test.record', fold_start=9, fold_end=10)
