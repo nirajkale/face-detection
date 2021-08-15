@@ -20,6 +20,7 @@ from collections import defaultdict
 from object_detection.utils import visualization_utils as vutils
 from object_detection.model_lib_v2 import _compute_losses_and_predictions_dicts
 from tqdm import tqdm
+import re
 if __package__:
     from .training_utils import *
 else:
@@ -78,19 +79,9 @@ def training_subroutine(
         is_training=True,
         add_summaries=True
     )
-    dataset_adapter_train = inputs.train_input(
-        train_config=train_config,
-        train_input_config=train_input_config,
-        model_config=model_config,
-        model=detection_model,
-        input_context=None
-    )
-    dataset_adapter_val = inputs.eval_input(
-          eval_config=eval_config,
-          eval_input_config=eval_input_config,
-          model_config=model_config,
-          model=detection_model
-    )
+    batch_size = train_config.batch_size
+    dataset_adapter_train = build_training_dataset(detection_model, model_config, train_config, train_input_config, batch_size = batch_size)
+    # dataset_adapter_val = build_eval_dataset(detection_model, model_config, eval_config, eval_input_config, batch_size = batch_size)
 
     #input_context is None if training setup is not distributed
     global_step = tf.Variable(0, trainable=False, dtype=tf.compat.v2.dtypes.int64, name='global_step')
@@ -123,7 +114,7 @@ def training_subroutine(
         # For evaling on train data, it is necessary to check whether groundtruth
         # must be unpadded.
         boxes_shape = (labels[fields.InputDataFields.groundtruth_boxes].get_shape().as_list())
-        unpad_groundtruth_tensors = (boxes_shape[1] is not None and eval_config.batch_size == 1)
+        unpad_groundtruth_tensors = (boxes_shape[1] is not None and batch_size == 1)
         groundtruth_dict = labels
         labels = model_lib.unstack_batch(labels, unpad_groundtruth_tensors=unpad_groundtruth_tensors)
         losses_dict, prediction_dict = _compute_losses_and_predictions_dicts(detection_model, features, labels, train_config.add_regularization_loss)
@@ -147,8 +138,6 @@ def training_subroutine(
         class_aware_evaluators = eval_util.get_evaluators(eval_config,list(class_aware_category_index.values()),evaluator_options)
     #end
     # logged_step = global_step.value()
-    data_iterator_train = iter(dataset_adapter_train)
-    data_iterator_val = iter(dataset_adapter_val)
     last_step_time = time.time()
     with mlflow.start_run(experiment_id= experiment_instance.experiment_id, run_name=run_name):
         mlflow.log_params({
@@ -159,16 +148,18 @@ def training_subroutine(
         })
         mlflow.log_artifact(model_dir)
         for epoch in range(epochs):
-            tf.print(f'Epoch {epoch} started')
+            print(f'Epoch {epoch} started')
+            #just as a test
+            dataset_adapter_val = build_eval_dataset(detection_model, model_config, eval_config, eval_input_config, batch_size = batch_size)
+            data_iterator_train = iter(dataset_adapter_train)
+            data_iterator_val = iter(dataset_adapter_val)
             batch_wise_loss_dict = defaultdict(list)
-            for step in tqdm(range(steps_per_epoch), desc='Training Over Batches'):
+            for step in tqdm(range(steps_per_epoch), desc='Training'):
                 features, labels = next(data_iterator_train)
                 losses_dict = train_step_fn(features, labels)
                 for k,v in losses_dict.items():
                     batch_wise_loss_dict[k+'_train'].append(v)
-                if step > 2:
-                    break
-            for step in tqdm(range(validation_steps), desc='Eval Over Batches'):
+            for step in tqdm(range(validation_steps), desc='Evaluating on test set'):
                 features, labels = next(data_iterator_val)
                 losses_dict, prediction_dict, groundtruth_dict, eval_features = compute_eval_dict(features, labels)
                 eval_dict, class_agnostic = prepare_eval_dict(prediction_dict, groundtruth_dict, eval_features)
@@ -185,8 +176,9 @@ def training_subroutine(
             for k,v_list in batch_wise_loss_dict.items():
                 logged_dict[k]= float(np.mean(v_list))
             for k, v in eval_metrics.items():
-                logged_dict[str(k)] = float(v)
-            mlflow.log_metrics(logged_dict)
+                logged_dict[re.sub('[^a-zA-Z\d\s.]', '-', str(k))] = float(v)
+            mlflow.log_metrics(logged_dict, step=epoch)
+            print(f'Epoch {epoch} ended')
     #save model
     tf.print(f'Saving model')
     manager.save()
@@ -195,16 +187,20 @@ if __name__ == '__main__':
 
     prefix = '640x640'
     model_name = 'ssd_resnet50'
-    run_name = 'run-3'
+    run_name = 'run-5'
     n_training_samples = 2306
     n_val_samples = 539
     experiment_instance = get_or_create_mlflow_experiment(prefix, model_name)
+    model_dir = path.join('models', model_name, run_name)
+    if not path.exists(model_dir):
+        os.makedirs(model_dir)
 
     training_subroutine(experiment_instance,\
         run_name= run_name,\
-        epochs=1, n_training_samples=n_training_samples, \
+        epochs=2,\
+        n_training_samples=n_training_samples, \
         n_val_samples= n_val_samples,\
         pipeline_config_path=r'training/pretrained/ssd_resnet50_v1_fpn_640x640_coco17_tpu-8/pipeline.config',\
-        model_dir= r'models/ssd_resnet50_v1',\
+        model_dir= model_dir,\
         save_final_config= True
     )
